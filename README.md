@@ -4,6 +4,8 @@ GUI output manager for Hyprland — enable/disable, arrange (drag + edge-snap),
 and set resolution / refresh rate / scale per monitor. A Wails (Go + system
 WebKit) app: lightweight native binary, the UI is plain HTML/CSS/JS.
 
+![Displays output manager](docs/screenshot.png)
+
 ## How it works
 
 - **Read** — `hyprctl monitors all -j` (includes disabled outputs).
@@ -36,6 +38,25 @@ nix-shell --run "wails dev -tags webkit2_41"
 
 Bound to `SUPER+SHIFT+D` in the Hyprland config. `Esc` closes the window.
 The window is frameless; drag it by the title bar.
+
+## Hyprland integration
+
+The window is frameless and meant to float. Add these rules so it always opens
+floating and centered (lua config; XWayland WM_CLASS is `Displays`):
+
+```lua
+hl.window_rule({ match = { class = "(?i)displays" }, float = true })
+hl.window_rule({ match = { class = "(?i)displays" }, center = true })
+hl.bind("SUPER + SHIFT + D", hl.dsp.exec_cmd("~/dev/displays/build/bin/displays"))
+```
+
+Classic `.conf` equivalent:
+
+```conf
+windowrule = float, class:(?i)displays
+windowrule = center, class:(?i)displays
+bind = SUPER SHIFT, D, exec, ~/dev/displays/build/bin/displays
+```
 
 ## Notes / gotchas
 
