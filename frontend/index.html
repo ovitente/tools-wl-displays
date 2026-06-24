@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Displays — Output manager</title>
+<style>
+/* Fonts vendored locally (no CDN) so the webview renders identically offline. */
+@font-face{font-family:'Chakra Petch';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/ChakraPetch-400.woff2') format('woff2')}
+@font-face{font-family:'Chakra Petch';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/ChakraPetch-500.woff2') format('woff2')}
+@font-face{font-family:'Chakra Petch';font-style:normal;font-weight:600;font-display:swap;src:url('/fonts/ChakraPetch-600.woff2') format('woff2')}
+@font-face{font-family:'Chakra Petch';font-style:normal;font-weight:700;font-display:swap;src:url('/fonts/ChakraPetch-700.woff2') format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('/fonts/JetBrainsMono-400.woff2') format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url('/fonts/JetBrainsMono-500.woff2') format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url('/fonts/JetBrainsMono-700.woff2') format('woff2')}
+:root{
+  --bg:#0d0e0f; --bg2:#16181a; --bg3:#1c1f22; --bg4:#23272b;
+  --line:#33383d; --line2:#474d53; --ink:#dadcde; --ink2:#9aa0a6; --ink3:#6b7177;
+  --accent:#f2a13c; --accent-dim:#7a5a2c;
+  --good:#7fd49a; --warn:#f2c46a; --off:#6b7177; --bad:#e08c8c;
+  --display:'Chakra Petch',sans-serif;
+  --mono:'JetBrains Mono',monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#070809; color:var(--ink); font-family:var(--mono); font-size:13px; line-height:1.45;
+  -webkit-font-smoothing:antialiased; display:flex; align-items:stretch; justify-content:stretch; padding:0}
+.disp{font-family:var(--display); text-transform:uppercase; letter-spacing:.08em}
+
+/* ============ APP WINDOW ============ */
+/* Fills the OS window and reflows on resize (the canvas grows with height). */
+.win{width:100%; height:100vh; max-width:none; background:var(--bg); border:1px solid var(--line);
+  box-shadow:0 30px 80px rgba(0,0,0,.6); display:flex; flex-direction:column}
+
+/* title bar */
+.titlebar{display:flex; align-items:center; gap:14px; padding:0 14px; height:46px; background:#000;
+  border-bottom:1px solid var(--line); flex:none; --wails-draggable:drag}
+.brand{font-family:var(--display); font-weight:700; text-transform:uppercase; letter-spacing:.22em; font-size:14px}
+.brand b{color:var(--accent)}
+.brand small{font-family:var(--mono); font-weight:400; text-transform:none; letter-spacing:.02em;
+  font-size:11px; color:var(--ink3); margin-left:10px}
+.wbtns{margin-left:auto; display:flex; gap:9px; align-items:center}
+.wbtns i{width:11px; height:11px; border:1px solid var(--line2); display:inline-block; border-radius:50%}
+
+/* body */
+.appbody{padding:16px 18px; display:flex; flex-direction:column; gap:13px; overflow:auto; flex:1; min-height:0;
+  background:var(--bg); background-image:radial-gradient(circle,#191c1f 1px,transparent 1px); background-size:22px 22px}
+/* Arrangement section grows; its canvas fills the leftover vertical space. */
+.appbody>section:first-child{flex:1; display:flex; flex-direction:column; min-height:200px}
+.appbody>section:first-child .canvas{flex:1; height:auto; min-height:150px}
+
+/* section heads */
+.sec-h{display:flex; align-items:center; gap:9px; margin-bottom:10px}
+.sec-h .dot{width:6px; height:6px; background:var(--accent); display:inline-block}
+.sec-h .t{font-family:var(--display); text-transform:uppercase; letter-spacing:.12em; font-size:11px; color:var(--ink2)}
+.sec-h .meta{margin-left:auto; font-size:11px; color:var(--ink3); letter-spacing:.04em}
+
+/* framed brackets */
+.framed{position:relative}
+.framed::before,.framed::after{content:''; position:absolute; width:13px; height:13px; pointer-events:none;
+  border-color:var(--line2); border-style:solid}
+.framed::before{top:0;left:0;border-width:2px 0 0 2px}
+.framed::after{bottom:0;right:0;border-width:0 2px 2px 0}
+
+/* ===== ARRANGEMENT CANVAS ===== */
+.canvas{position:relative; height:196px; background:var(--bg2); border:1px solid var(--line);
+  overflow:hidden}
+.canvas .grid{position:absolute; inset:0; background-image:
+  linear-gradient(var(--line) 1px,transparent 1px),
+  linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:13px 13px; opacity:.22}
+.mon{position:absolute; border:1.5px solid var(--line2); background:var(--bg3); cursor:grab;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; overflow:hidden;
+  user-select:none; touch-action:none; transition:border-color .12s, background .12s}
+.mon:hover{border-color:var(--ink3)}
+.mon.drag{cursor:grabbing; z-index:6; box-shadow:0 8px 26px rgba(0,0,0,.55)}
+.mon.snap{border-color:var(--accent)}
+.mon.snap::after,.mon.snap::before{content:''}
+.mon .mn-name{font-family:var(--display); text-transform:uppercase; letter-spacing:.08em; font-size:12px; color:var(--ink)}
+.mon .mn-res{font-size:10px; color:var(--ink3)}
+.mon.on{border-color:var(--good); background:rgba(127,212,154,.07)}
+.mon.on .mn-name{color:var(--ink)}
+.mon.sel{border-color:var(--accent); background:rgba(242,161,60,.10);
+  box-shadow:0 0 0 1px var(--accent) inset}
+.mon.off{border-style:dashed; opacity:.45}
+.mon.off .mn-name{color:var(--ink3)}
+.mon .pri{position:absolute; top:4px; left:5px; font-family:var(--display); font-size:8px; letter-spacing:.08em;
+  color:var(--accent); border:1px solid var(--accent-dim); padding:1px 4px; text-transform:uppercase; background:rgba(13,14,15,.5)}
+
+/* ===== OUTPUTS LIST ===== */
+.list{border:1px solid var(--line); background:var(--bg2)}
+.row{display:grid; grid-template-columns:18px minmax(140px,1fr) 92px 122px 90px 76px 60px; align-items:center; gap:12px;
+  padding:11px 16px; border-bottom:1px solid var(--bg3); cursor:pointer}
+.row:last-child{border-bottom:none}
+.row:hover{background:var(--bg3)}
+.row.sel{background:rgba(242,161,60,.07); box-shadow:inset 3px 0 0 var(--accent)}
+.led{width:8px; height:8px; border-radius:50%; display:inline-block}
+.led.good{background:var(--good); box-shadow:0 0 7px rgba(127,212,154,.6)}
+.led.off{background:var(--off)}
+.r-name{font-family:var(--display); text-transform:uppercase; letter-spacing:.06em; font-size:14px; color:var(--ink)}
+.r-name small{display:block; font-family:var(--mono); text-transform:none; letter-spacing:0; font-size:10px;
+  color:var(--ink3); margin-top:2px}
+.r-model{font-size:11px; color:var(--ink2)}
+.r-pos{font-family:var(--mono); font-size:11px; color:var(--ink3); letter-spacing:.05em; white-space:nowrap}
+.r-pos b{color:var(--ink2); font-weight:500}
+.row.dis .r-pos b{color:var(--line2)}
+.pill{display:inline-block; font-family:var(--display); font-size:8px; letter-spacing:.12em; color:var(--accent);
+  border:1px solid var(--accent-dim); padding:1px 5px; margin-left:9px; vertical-align:2px; text-transform:uppercase;
+  background:rgba(242,161,60,.08)}
+.r-res{font-size:12px; color:var(--ink); white-space:nowrap}
+.r-res .hz{color:var(--ink3)}
+.row.dis .r-name,.row.dis .r-res{color:var(--ink3)}
+.row.dis .r-res .hz{color:var(--line2)}
+
+/* switch */
+.sw{width:60px; height:26px; border:1px solid var(--line2); background:var(--bg3); position:relative;
+  cursor:pointer; flex:none; justify-self:end; user-select:none}
+.sw .knob{position:absolute; top:2px; left:2px; width:26px; height:20px; background:var(--line2);
+  transition:left .14s, background .14s}
+.sw .txt{position:absolute; top:0; bottom:0; display:flex; align-items:center; font-family:var(--display);
+  font-size:9px; letter-spacing:.08em; color:var(--ink3); pointer-events:none}
+.sw .txt.l{left:8px} .sw .txt.r{right:8px}
+.sw.on{border-color:var(--good)}
+.sw.on .knob{left:32px; background:var(--good)}
+.sw.on .txt.l{color:var(--good); font-weight:700}
+.sw.on .txt.r{opacity:0}
+.sw:not(.on) .txt.l{opacity:0}
+.sw:not(.on) .txt.r{color:var(--ink2)}
+
+/* inline mode selects (in each output row) */
+select.sel{font-family:var(--mono); font-size:12px; color:var(--ink); background:var(--bg3); border:1px solid var(--line2);
+  padding:7px 26px 7px 9px; border-radius:2px; cursor:pointer; appearance:none; -webkit-appearance:none; width:100%;
+  background-image:linear-gradient(45deg,transparent 50%,var(--ink3) 50%),linear-gradient(135deg,var(--ink3) 50%,transparent 50%);
+  background-position:calc(100% - 13px) center,calc(100% - 9px) center; background-size:5px 5px,5px 5px; background-repeat:no-repeat}
+select.sel:hover{border-color:var(--ink3)}
+select.sel:focus{outline:none; border-color:var(--accent)}
+select.sel:disabled{cursor:default; color:var(--ink3); opacity:.5}
+select.sel option{background:#1c1f22; color:var(--ink)}
+
+/* footer */
+.footer{display:flex; align-items:center; gap:10px; padding:13px 18px; border-top:1px solid var(--line);
+  background:var(--bg2); flex:none}
+.foot-note{font-size:11px; color:var(--ink3); letter-spacing:.03em}
+.foot-note b{color:var(--ink2); font-weight:500}
+.btn{font-family:var(--display); text-transform:uppercase; letter-spacing:.09em; font-size:11px;
+  border:1px solid var(--line2); background:var(--bg3); color:var(--ink2); padding:9px 18px; cursor:pointer;
+  border-radius:2px; white-space:nowrap}
+.btn:hover{border-color:var(--ink3); color:var(--ink)}
+.btn.pri{background:var(--accent); color:#1a1206; border-color:var(--accent); font-weight:600}
+.btn.pri:hover{filter:brightness(1.06)}
+.spacer{flex:1}
+
+/* toast */
+.toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px);
+  background:#000; border:1px solid var(--line2); color:var(--ink); font-size:12px; letter-spacing:.04em;
+  padding:11px 18px; opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; z-index:99}
+.toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+.toast b{color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div class="win framed">
+  <div class="titlebar">
+    <div class="brand">DIS<b>P</b>LAYS<small>output manager</small></div>
+  </div>
+
+  <div class="appbody">
+    <!-- ARRANGEMENT -->
+    <section>
+      <div class="sec-h">
+        <span class="dot"></span><span class="t">Arrangement</span>
+        <span class="meta" id="arr-meta"></span>
+      </div>
+      <div class="canvas framed" id="canvas"><div class="grid"></div></div>
+    </section>
+
+    <!-- OUTPUTS -->
+    <section>
+      <div class="sec-h">
+        <span class="dot"></span><span class="t">Outputs</span>
+        <span class="meta" id="list-meta"></span>
+      </div>
+      <div class="list" id="list"></div>
+    </section>
+  </div>
+
+  <div class="footer">
+    <div class="foot-note" id="foot-note"></div>
+    <div class="spacer"></div>
+    <button class="btn" data-act="reset">Reset</button>
+    <button class="btn pri" data-act="apply">Apply</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
