@@ -28,6 +28,44 @@ wails build -tags webkit2_41    # nixpkgs ships webkit2gtk abi 4.1
 
 Binary: `build/bin/displays`.
 
+## Install (Nix flake)
+
+The repo is a flake exposing `packages.default`. The tags `desktop`,
+`production`, `webkit2_41` are baked in — a plain `go build` would drop the
+GTK/WebKit backend and yield a headless stub.
+
+Run without installing:
+
+```sh
+nix run github:ovitente/tools-wl-displays
+```
+
+Imperative install into your profile:
+
+```sh
+nix profile install github:ovitente/tools-wl-displays
+```
+
+Declarative (NixOS flake): add the input, expose it via an overlay, then install
+`pkgs.displays`.
+
+```nix
+# flake.nix
+inputs.displays = {
+  url = "github:ovitente/tools-wl-displays";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# overlay
+(final: prev: { displays = inputs.displays.packages.${prev.stdenv.hostPlatform.system}.default; })
+
+# module
+environment.systemPackages = [ pkgs.displays ];
+```
+
+The binary lands on `PATH` as `displays`, so the Hyprland bind is just
+`exec, displays` (see below).
+
 ## Dev
 
 ```sh
@@ -47,7 +85,7 @@ floating and centered (lua config; XWayland WM_CLASS is `Displays`):
 ```lua
 hl.window_rule({ match = { class = "(?i)displays" }, float = true })
 hl.window_rule({ match = { class = "(?i)displays" }, center = true })
-hl.bind("SUPER + SHIFT + D", hl.dsp.exec_cmd("~/dev/displays/build/bin/displays"))
+hl.bind("SUPER + SHIFT + D", hl.dsp.exec_cmd("displays"))
 ```
 
 Classic `.conf` equivalent:
@@ -55,8 +93,11 @@ Classic `.conf` equivalent:
 ```conf
 windowrule = float, class:(?i)displays
 windowrule = center, class:(?i)displays
-bind = SUPER SHIFT, D, exec, ~/dev/displays/build/bin/displays
+bind = SUPER SHIFT, D, exec, displays
 ```
+
+(`displays` on `PATH` assumes the flake install above; otherwise point the bind
+at `build/bin/displays`.)
 
 ## Notes / gotchas
 
