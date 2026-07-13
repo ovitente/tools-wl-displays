@@ -27,9 +27,14 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:     "Displays",
-		Width:     980,
-		Height:    700,
+		Title:  "Displays",
+		Width:  980,
+		Height: 700,
+		// Below this the layout degenerates (list columns collapse, canvas
+		// approaches zero) — refuse to shrink further. 760x560 is the smallest
+		// size the e2e containment checks exercise.
+		MinWidth:  760,
+		MinHeight: 560,
 		Frameless: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
