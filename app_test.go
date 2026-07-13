@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestParseModes checks availableModes strings are grouped into the frontend shape.
@@ -47,6 +51,183 @@ func TestMonitorLua(t *testing.T) {
 	off := monitorLua(Monitor{Name: "DP-3", Active: false})
 	if !strings.Contains(off, "disabled = true") {
 		t.Errorf("inactive monitor lua must set disabled = true: %s", off)
+	}
+}
+
+// ---------- apply / confirm / revert state machine ----------
+
+// monsJSON is what the fake hyprctl serves for `monitors all -j`: one active
+// output at the origin.
+const monsJSON = `[{"name":"DP-1","make":"Dell","model":"U2720Q","width":2560,"height":1440,` +
+	`"refreshRate":60.0,"x":0,"y":0,"scale":1.0,"disabled":false,"focused":true,` +
+	`"availableModes":["2560x1440@60.00Hz"]}]`
+
+// withFakeHyprctl swaps the hyprctl var for a stub: `monitors` returns json,
+// `eval` is recorded (and fails when the lua contains failOn). Returns the
+// recorded evals; access is synchronized because the auto-revert timer fires
+// on its own goroutine.
+func withFakeHyprctl(t *testing.T, json, failOn string) func() []string {
+	t.Helper()
+	orig := hyprctl
+	var mu sync.Mutex
+	var evals []string
+	hyprctl = func(args ...string) (string, error) {
+		switch args[0] {
+		case "monitors":
+			return json, nil
+		case "eval":
+			mu.Lock()
+			evals = append(evals, args[1])
+			mu.Unlock()
+			if failOn != "" && strings.Contains(args[1], failOn) {
+				return "", fmt.Errorf("fake hyprctl: forced failure")
+			}
+			return "ok", nil
+		}
+		return "", fmt.Errorf("fake hyprctl: unexpected args %v", args)
+	}
+	t.Cleanup(func() { hyprctl = orig })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), evals...)
+	}
+}
+
+// testHome points $HOME at a temp dir (with .config/hypr present, as on a real
+// system) and returns the monitors.lua path persist would write.
+func testHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "hypr"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(home, ".config", "hypr", "monitors.lua")
+}
+
+func testMons() []Monitor {
+	return []Monitor{{Name: "DP-1", W: 2560, H: 1440, Rate: 60, Scale: 1, X: 100, Y: 0, Active: true}}
+}
+
+func TestApplyDoesNotPersist(t *testing.T) {
+	withFakeHyprctl(t, monsJSON, "")
+	luaPath := testHome(t)
+	a := NewApp()
+	if _, err := a.Apply(testMons()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := os.Stat(luaPath); !os.IsNotExist(err) {
+		t.Errorf("monitors.lua must not exist before confirm (stat err: %v)", err)
+	}
+	if _, err := a.RevertApply(); err != nil { // stop the timer, clean up
+		t.Fatalf("RevertApply: %v", err)
+	}
+}
+
+func TestConfirmPersists(t *testing.T) {
+	withFakeHyprctl(t, monsJSON, "")
+	luaPath := testHome(t)
+	a := NewApp()
+	if _, err := a.Apply(testMons()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if err := a.ConfirmApply(); err != nil {
+		t.Fatalf("ConfirmApply: %v", err)
+	}
+	data, err := os.ReadFile(luaPath)
+	if err != nil {
+		t.Fatalf("monitors.lua missing after confirm: %v", err)
+	}
+	if !strings.Contains(string(data), `position = "100x0"`) {
+		t.Errorf("persisted lua lacks applied position: %s", data)
+	}
+	if err := a.ConfirmApply(); err != nil { // idempotent no-op
+		t.Errorf("second ConfirmApply must no-op, got %v", err)
+	}
+}
+
+func TestAutoRevert(t *testing.T) {
+	origDelay := revertDelay
+	revertDelay = 50 * time.Millisecond
+	t.Cleanup(func() { revertDelay = origDelay })
+
+	getEvals := withFakeHyprctl(t, monsJSON, "")
+	luaPath := testHome(t)
+	a := NewApp()
+	if _, err := a.Apply(testMons()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	reverted := false
+	for time.Now().Before(deadline) {
+		for _, l := range getEvals()[1:] { // evals[0] is the apply itself
+			if strings.Contains(l, `position = "0x0"`) {
+				reverted = true
+			}
+		}
+		if reverted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !reverted {
+		t.Fatalf("auto-revert did not re-apply the snapshot; evals: %v", getEvals())
+	}
+	if _, err := os.Stat(luaPath); !os.IsNotExist(err) {
+		t.Errorf("monitors.lua must not exist after auto-revert (stat err: %v)", err)
+	}
+	// Idempotence: a late explicit revert finds nothing pending, no new evals.
+	n := len(getEvals())
+	if _, err := a.RevertApply(); err != nil {
+		t.Fatalf("late RevertApply: %v", err)
+	}
+	if len(getEvals()) != n {
+		t.Errorf("late RevertApply must not re-apply anything")
+	}
+}
+
+func TestApplyWhilePending(t *testing.T) {
+	withFakeHyprctl(t, monsJSON, "")
+	testHome(t)
+	a := NewApp()
+	if _, err := a.Apply(testMons()); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := a.Apply(testMons()); err == nil {
+		t.Error("second Apply while pending must fail")
+	}
+	if _, err := a.RevertApply(); err != nil {
+		t.Fatalf("RevertApply: %v", err)
+	}
+}
+
+func TestApplyPartialFailure(t *testing.T) {
+	getEvals := withFakeHyprctl(t, monsJSON, "DP-2")
+	testHome(t)
+	a := NewApp()
+	mons := append(testMons(),
+		Monitor{Name: "DP-2", W: 1920, H: 1080, Rate: 60, Scale: 1, X: 2660, Y: 0, Active: true})
+	if _, err := a.Apply(mons); err == nil {
+		t.Fatal("Apply must fail when one output is rejected")
+	}
+	// Best-effort restore: the snapshot (DP-1 at 0,0) was re-applied.
+	restored := false
+	for _, l := range getEvals() {
+		if strings.Contains(l, `position = "0x0"`) {
+			restored = true
+		}
+	}
+	if !restored {
+		t.Errorf("snapshot not re-applied after partial failure; evals: %v", getEvals())
+	}
+	// Nothing pending: a fresh Apply must be accepted again.
+	if _, err := a.Apply(testMons()); err != nil {
+		t.Errorf("Apply after failed apply must work, got %v", err)
+	}
+	if _, err := a.RevertApply(); err != nil {
+		t.Fatalf("RevertApply: %v", err)
 	}
 }
 
