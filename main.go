@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"os"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
 //go:embed all:frontend/dist
@@ -34,6 +36,21 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 7, G: 8, B: 9, A: 1},
 		OnStartup:        app.startup,
+		// Closing the window (Esc) with an unconfirmed Apply pending must not
+		// leave that layout live — revert first, then allow the close.
+		OnBeforeClose: func(ctx context.Context) bool {
+			app.revertIfPending()
+			return false
+		},
+		Linux: &linux.Options{
+			// Wails defaults to WebviewGpuPolicyNever when Linux options are
+			// absent (wails#2977) — pure software rasterization, so paint cost
+			// grows with window area and fullscreen lags. Force GPU compositing;
+			// if NVIDIA/XWayland artifacts show up, fall back to Never and set
+			// WEBKIT_DISABLE_DMABUF_RENDERER=1 instead.
+			WebviewGpuPolicy: linux.WebviewGpuPolicyAlways,
+			ProgramName:      "displays",
+		},
 		Bind: []interface{}{
 			app,
 		},
