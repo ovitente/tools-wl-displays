@@ -1,18 +1,28 @@
 # displays
 
-GUI output manager for Hyprland — enable/disable, arrange (drag + edge-snap),
-and set resolution / refresh rate / scale per monitor. A Wails (Go + system
-WebKit) app: lightweight native binary, the UI is plain HTML/CSS/JS.
+GUI output manager for Hyprland — enable/disable, arrange (drag with forced
+edge-to-edge adjacency), and set resolution / refresh rate / scale per monitor.
+A Wails (Go + system WebKit) app: lightweight native binary, the UI is plain
+HTML/CSS/JS.
 
 ![Displays output manager](docs/screenshot.png)
 
 ## How it works
 
 - **Read** — `hyprctl monitors all -j` (includes disabled outputs).
-- **Apply (live)** — for each output `hyprctl keyword monitor "NAME,WxH@Hz,XxY,scale"`
-  (or `NAME,disable`). Takes effect instantly, no reload.
-- **Persist** — rewrites `~/.config/hypr/monitors.lua`, which `hyprland.lua`
-  sources via `dofile()`, so the layout survives reload/reboot.
+- **Arrange** — dragging is free, but on drop the output snaps to the nearest
+  gap-free spot: active outputs always form one connected, non-overlapping
+  cluster (GNOME model). Geometry uses logical sizes (`pixels / scale`), so
+  layouts stay flush for scaled outputs too.
+- **Apply (live)** — for each output `hyprctl eval 'hl.monitor({...})'`.
+  Takes effect instantly, no reload.
+- **Confirm or revert** — an applied layout stays *pending* for 10 seconds:
+  a dialog offers Keep / Revert, and if it isn't confirmed (timeout, Esc, or
+  closing the window) the previous configuration is restored automatically —
+  a layout that blanks the displays can't survive.
+- **Persist** — confirming rewrites `~/.config/hypr/monitors.lua`, which
+  `hyprland.lua` sources via `dofile()`, so the layout survives reload/reboot.
+  Until confirmed, nothing touches disk.
 
 The frontend re-reads state after Apply, so any value Hyprland adjusts
 (e.g. an invalid scale snapped to a valid one) is reflected back.
@@ -110,9 +120,11 @@ at `build/bin/displays`.)
 ## Tests
 
 - `node tests/run.mjs` — headless e2e (puppeteer + system Chrome): stubs the Go
-  backend, drives the real UI (toggle, mode change, Apply payload), screenshots
-  each step to `tests/screenshots/`, checks for console/asset errors.
-- `go test ./...` — backend: availableModes parsing, scale formatting, and a live
+  backend, drives the real UI (toggle, mode change, Apply payload, drag with
+  snap-on-drop adjacency, confirm/revert countdown, canvas containment),
+  screenshots each step to `tests/screenshots/`, checks for console/asset errors.
+- `go test ./...` — backend: availableModes parsing, scale formatting, the
+  apply/confirm/revert state machine (faked hyprctl, temp $HOME), and a live
   `GetMonitors` against the running Hyprland (skipped without a session).
 - `visual.sh` (lives in dotfiles: `.config/hypr/scripts/visual.sh`) — launches the
   built binary in the live Hyprland session and captures the actual WebKit render

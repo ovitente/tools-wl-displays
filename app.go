@@ -12,13 +12,27 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // App is the Wails application backend. Every exported method is bound into the
 // frontend at window.go.main.App.*.
 type App struct {
 	ctx context.Context
+
+	// Apply/confirm/revert state. Wails runs each bound call on its own
+	// goroutine and the auto-revert timer fires on yet another, so every
+	// access goes through mu.
+	mu       sync.Mutex
+	pending  []Monitor   // applied but unconfirmed layout (nil = idle)
+	snapshot []Monitor   // live state captured right before the pending apply
+	timer    *time.Timer // auto-revert countdown
 }
+
+// revertDelay is how long an applied-but-unconfirmed layout survives before
+// being reverted automatically. A var so tests can shrink it.
+var revertDelay = 10 * time.Second
 
 func NewApp() *App { return &App{} }
 
@@ -122,28 +136,89 @@ func (a *App) GetMonitors() ([]Monitor, error) {
 	return mons, nil
 }
 
-// Apply pushes the layout to Hyprland live, persists it to monitors.lua, and
-// returns the re-read state so the UI reflects any value Hyprland adjusted
-// (e.g. an invalid scale snapped to a valid one).
+// Apply pushes the layout to Hyprland live and returns the re-read state so
+// the UI reflects any value Hyprland adjusted (e.g. an invalid scale snapped
+// to a valid one). Nothing is persisted yet: the layout stays pending until
+// ConfirmApply, and auto-reverts to the pre-Apply snapshot after revertDelay
+// (or on window close) — so a layout that blanks the displays can't survive.
+func (a *App) Apply(mons []Monitor) ([]Monitor, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending != nil {
+		return nil, fmt.Errorf("previous apply is still awaiting confirmation")
+	}
+
+	snapshot, err := a.GetMonitors()
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: %w", err)
+	}
+
+	if err := applyLive(mons); err != nil {
+		// Some outputs may already carry the new config — best-effort restore.
+		_ = applyLive(snapshot)
+		return nil, err
+	}
+
+	a.pending = mons
+	a.snapshot = snapshot
+	a.timer = time.AfterFunc(revertDelay, func() { _, _ = a.RevertApply() })
+	return a.GetMonitors()
+}
+
+// ConfirmApply keeps the pending layout: stops the auto-revert timer and
+// persists to monitors.lua. No-op when nothing is pending.
+func (a *App) ConfirmApply() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending == nil {
+		return nil
+	}
+	a.timer.Stop()
+	mons := a.pending
+	a.pending, a.snapshot, a.timer = nil, nil, nil
+	if err := persist(mons); err != nil {
+		return fmt.Errorf("persist: %w", err)
+	}
+	return nil
+}
+
+// RevertApply restores the pre-Apply snapshot. Idempotent: the auto-revert
+// timer and an explicit frontend call may race — whoever comes second finds
+// nothing pending and just returns the current state.
+func (a *App) RevertApply() ([]Monitor, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending == nil {
+		return a.GetMonitors()
+	}
+	a.timer.Stop()
+	snap := a.snapshot
+	a.pending, a.snapshot, a.timer = nil, nil, nil
+	if err := applyLive(snap); err != nil {
+		return nil, fmt.Errorf("revert: %w", err)
+	}
+	return a.GetMonitors()
+}
+
+// revertIfPending backs OnBeforeClose: unconfirmed changes never outlive the app.
+func (a *App) revertIfPending() { _, _ = a.RevertApply() }
+
+// applyLive pushes each output to Hyprland.
 //
 // This Hyprland runs a Lua config (0.55), where `hyprctl keyword` is rejected
 // ("keyword can't work with non-legacy parsers. Use eval."). So live changes go
 // through `hyprctl eval 'hl.monitor({...})'` — the same call the config uses.
-func (a *App) Apply(mons []Monitor) ([]Monitor, error) {
+func applyLive(mons []Monitor) error {
 	for _, m := range mons {
 		out, err := hyprctl("eval", monitorLua(m))
 		if err != nil {
-			return nil, fmt.Errorf("apply %s: %w", m.Name, err)
+			return fmt.Errorf("apply %s: %w", m.Name, err)
 		}
 		if strings.TrimSpace(out) != "ok" {
-			return nil, fmt.Errorf("apply %s: hyprland rejected: %s", m.Name, out)
+			return fmt.Errorf("apply %s: hyprland rejected: %s", m.Name, out)
 		}
 	}
-
-	if err := persist(mons); err != nil {
-		return nil, fmt.Errorf("persist: %w", err)
-	}
-	return a.GetMonitors()
+	return nil
 }
 
 // ---------- helpers ----------
@@ -227,7 +302,8 @@ func persist(mons []Monitor) error {
 }
 
 // hyprctl runs the Hyprland control client and returns trimmed stdout.
-func hyprctl(args ...string) (string, error) {
+// A var so tests can substitute a fake.
+var hyprctl = func(args ...string) (string, error) {
 	cmd := exec.Command("hyprctl", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
